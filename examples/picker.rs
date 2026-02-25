@@ -1,6 +1,7 @@
 use iocraft::prelude::*;
 
-use std::process::{Command, Stdio};
+//use std::process::{Command, Stdio};
+use smol::process::{Command, Stdio};
 use std::io;
 
 #[derive(Clone, Debug)]
@@ -9,13 +10,20 @@ struct ManPage {
     title: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+enum ManLayout {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
 fn parse_man_output(output: &str) -> Vec<ManPage> {
     let mut man_pages = Vec::new();
 
     for line in output.lines().map(|x| x.trim()).filter(|x| !x.is_empty()) {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 2 {
-            continue; // malformed
+            continue; 
         }
 
         // The key is the first part (e.g., "arandr")
@@ -57,7 +65,7 @@ fn matches(key: &str, query: &str) -> Option<Vec<MixedTextContent>> {
 }
 
 fn get_man_pages() -> io::Result<Vec<ManPage>> {
-    let output = Command::new("man")
+    let output = std::process::Command::new("man")
         .args(["-k", ".", "-s", "1"])
         .output()?;
 
@@ -90,8 +98,11 @@ fn Prompt<'a>(props: &'a PromptProps, _hooks: Hooks) -> impl Into<AnyElement<'st
     };
 
     element! {
-        View(border_style: BorderStyle::Round, flex_grow: 1.0, height: 3, border_title: Some(BorderTitle { title: props.title.clone(), pos: BorderTitlePos::Bottom })) {
-            Fragment {
+        View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, height: 3) {
+            View(height: 1, margin_top: -1, justify_content: JustifyContent::Center) {
+                Text(content: "Prompt")
+            }
+            View(flex_direction: FlexDirection::Row) {
                 #( if props.show_carrot { Some(
                         element! { Text(content: ">", color: Some(Color::Red)) }) 
                    } else { None }
@@ -105,31 +116,153 @@ fn Prompt<'a>(props: &'a PromptProps, _hooks: Hooks) -> impl Into<AnyElement<'st
     }
 }
 
+fn find_sgr<I: Iterator<Item=char>>(it: &mut std::iter::Peekable<I>, e: char) -> Option<usize> {
+    let Some(c) = it.peek() else {
+        return None;
+    };
+
+    if *c != '\u{1b}' {
+        return None;
+    }
+
+    it.next().unwrap();
+
+    let Some(c) = it.next() else {
+        return None;
+    };
+
+    if c != '[' {
+        return None;
+    };
+
+    if *it.peek().unwrap() == e {
+        return Some(0);
+    }
+
+    let digit = it.take_while(|x| *x != e).collect::<String>();
+
+    return Some(digit.parse().unwrap());
+}
+
+fn escape_chars_to_styling(content: &str) -> Vec<MixedTextContent> {
+    let (mut text, mut bold, mut underline) = (String::new(), false, false);
+    let mut elms = Vec::new();
+    let mut push = |text, bold, underline| {
+        elms.push(MixedTextContent::new(text)
+            .weight(if bold { Weight::Bold } else { Weight::Normal })
+            .decoration(if underline { TextDecoration::Underline } else { TextDecoration::None }));
+    };
+
+    let mut it = content.chars().peekable();
+    loop {
+        let mut is_text = false;
+        let sgr = find_sgr(&mut it, 'm');
+
+        match sgr {
+            Some(x) => {
+                push(text, bold, underline);
+                text = String::new();
+
+                match x {
+                    0 | 22 => {bold = false; underline = false;},
+                    1 => bold = true,
+                    4 => underline = true,
+                    24 => underline = false,
+                    x => {dbg!(x); panic!("");},
+                }
+            },
+            None => is_text = true,
+        };
+
+        if is_text {
+            if let Some(c) = it.next() {
+                text.push(c);
+            } else {
+                break;
+            }
+        }
+    }
+
+    if text.len() > 0 {
+        push(text, bold, underline);
+    }
+
+    elms
+}
+
+#[derive(Props, Default)]
+struct PreviewProps {
+    current: String,
+}
+
+#[component]
+fn Preview<'a>(props: &'a PreviewProps, mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
+    let mut contents = hooks.use_state_default();
+    let width = hooks.use_component_rect().get()
+        .map(|rect| rect.right - rect.left - 2);
+
+    let update_page = hooks.use_async_handler(move |current: String| async move {
+        // do not render if width is not known yet
+        let Some(width) = width else {
+            return;
+        };
+
+        let res = Command::new("man").args(&[&current.to_string()])
+            .env("MANWIDTH", width.to_string())
+            .env("MAN_KEEP_FORMATTING", "1")
+            .env("GROFF_SGR", "1")
+            .stdout(Stdio::piped())
+            .output().await.unwrap();
+
+        contents.set(escape_chars_to_styling(str::from_utf8(&res.stdout).unwrap()));
+    });
+
+    // update content when page key or width changed
+    hooks.use_memo(|| update_page(props.current.clone()), (&props.current, width));
+
+    element! { 
+        View(flex_grow: 1.0, flex_direction: FlexDirection::Column, border_style: BorderStyle::Round) {
+            View(height: 1, margin_top: -1, justify_content: JustifyContent::Center) {
+                Text(content: "Preview")
+            }
+            View(height: 100pct,  overflow: Some(Overflow::Hidden)) {
+                MixedText(contents: contents.read().clone())
+            }
+        }
+    }
+}
+
 #[derive(Props, Default)]
 struct ResultsProps {
     elms: Vec<(String, Vec<MixedTextContent>)>,
+    current_idx: Option<State<isize>>,
 }
 
 #[component]
 fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
+    let Some(mut current_idx) = props.current_idx else {
+        panic!("value is required");
+    };
+
     let max_len = hooks.use_memo(|| 
         props.elms.iter().map(|x| x.0.len()).max().unwrap_or(0) as u32, 
         &props.elms.iter().map(|x| x.0.clone()).collect::<String>());
 
-    let max_len = u32::min(max_len, 17);
-    let mut current_idx = hooks.use_state(|| 0isize);
-    let mut beginning = hooks.use_state(|| 0);
+    let (width, height) = match hooks.use_component_rect().get() {
+        Some(rect) => (rect.right - rect.left - 2, rect.bottom - rect.top - 2),
+        _ => (16, 16)
+    };
 
-    if current_idx.get() < 0 {
-        current_idx.set(props.elms.len() as isize - 1);
-    } else if current_idx.get() >= props.elms.len() as isize && props.elms.len() > 0 {
-        current_idx.set(0);
-    }
+    let max_len = u32::min(max_len, height as u32);
+    let header_len = u32::max(width as u32 - max_len - 4, 4);
+    let key_len = width as u32 - header_len;
+
+    let mut beginning = hooks.use_state(|| 0);
 
     if beginning > current_idx.get() {
         beginning.set(current_idx.get());
-    } else if current_idx.get() > beginning + 17 {
-        beginning.set(current_idx.get() - 17);
+    } else if current_idx.get() > beginning + height as isize - 1 {
+        beginning.set(current_idx.get() - height as isize + 1);
     }
 
     let nprops = props.elms.len();
@@ -142,11 +275,23 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
         move |event| match event {
             TerminalEvent::Key(KeyEvent { code, kind, .. }) if kind != KeyEventKind::Release => {
                 match code {
-                    KeyCode::Up => current_idx.set(current_idx.get() - 1),
-                    KeyCode::Down => current_idx.set(isize::min(current_idx.get() + 1, nprops as isize)),
+                    KeyCode::Up => {
+                        if current_idx.get() - 1 < 0 {
+                            current_idx.set(nprops as isize - 1);
+                        } else {
+                            current_idx.set(current_idx.get() - 1);
+                        }
+                    },
+                    KeyCode::Down => {
+                        if current_idx.get() < nprops as isize - 1 {
+                            current_idx.set(current_idx.get() + 1);
+                        } else {
+                            current_idx.set(0);
+                        }
+                    },
                     KeyCode::Enter => {
                         current_key.as_ref().map(|current_key| {
-                            let _ = Command::new("man").arg(&current_key)
+                            let _ = std::process::Command::new("man").arg(&current_key)
                                 .stdout(Stdio::inherit())
                                 .stdin(Stdio::inherit())
                                 .output().unwrap();
@@ -160,19 +305,24 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
     });
 
     element! { 
-        View(flex_grow: 1.0, flex_direction: FlexDirection::Column, height: 20, border_style: BorderStyle::Round, overflow: Some(Overflow::Hidden), border_title: Some(BorderTitle { title: "Results".to_owned(), pos: BorderTitlePos::Top })) {
-            #(props.elms.iter().enumerate().skip(beginning.get() as usize)
-            .map(|(idx, mat)| if current_idx.get() as usize == idx {
-                (Color::DarkGrey, mat)
-            } else {
-                (Color::Reset, mat)
-            })
-            .map(|(color, mat)| element! { 
-                View(flex_direction: FlexDirection::Row, background_color: Some(color)) {
-                    View(width: max_len + 2, height: 1) { Text(content: mat.0.clone(), color: Some(Color::Cyan), weight: Weight::Bold) }
-                    View(width: 80 - max_len - 2) {MixedText(contents: mat.1.clone(), wrap: TextWrap::NoWrap) }
-                }
-            }).take(18))
+        View(flex_grow: 1.0, flex_direction: FlexDirection::Column, border_style: BorderStyle::Round) {
+            View(height: 1, margin_top: -1, justify_content: JustifyContent::Center) {
+                Text(content: "Results")
+            }
+            View(flex_direction: FlexDirection::Column, overflow: Some(Overflow::Hidden)) {
+                #(props.elms.iter().enumerate().skip(beginning.get() as usize)
+                .map(|(idx, mat)| if current_idx.get() as usize == idx {
+                    (Color::DarkGrey, mat)
+                } else {
+                    (Color::Reset, mat)
+                })
+                .map(|(color, mat)| element! { 
+                    View(flex_direction: FlexDirection::Row, background_color: Some(color)) {
+                        View(width: key_len, height: 1) { Text(content: mat.0.clone(), color: Some(Color::Cyan), weight: Weight::Bold) }
+                        View(width: header_len) {MixedText(contents: mat.1.clone(), wrap: TextWrap::NoWrap) }
+                    }
+                }).take(height as usize))
+            }
         }
     }
 }
@@ -182,17 +332,62 @@ struct ManPicker;
 
 #[component]
 fn Picker<'a>(_props: &'a ManPicker, mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
+    // global view of all pages
     let pages = hooks.use_const(|| get_man_pages().unwrap());
-    let prompt: State<String> = hooks.use_state_default();
 
+    // query of the prompt element and selected element in the results lists
+    // are shared between two components
+    let prompt: State<String> = hooks.use_state_default();
+    let current_idx = hooks.use_state(|| 0isize);
+
+    // layout can be changed during runtime
+    let mut layout = hooks.use_state(|| ManLayout::Vertical);
+
+    // cache preview elements based on current prompt
     let elms = hooks.use_memo(|| 
-        pages.iter().filter_map(|page| matches(&page.title, &prompt.read().as_str()).map(|x| (page.key.clone(), x))).collect::<Vec<_>>(), &prompt);
+        pages.iter()
+            .filter_map(|page| matches(&page.title, &prompt.read().as_str())
+                .map(|x| (page.key.clone(), x))
+            ).collect::<Vec<_>>()
+        , &prompt);
 
     let nelms = (elms.len(), pages.len());
-    element! {
-        View(flex_direction: FlexDirection::Column, width: Size::Percent(100.0)) {
-            Results(elms: elms)
-            Prompt(prompt: prompt, show_carrot: true, nelms, title: "Man Pages".to_owned())
+
+    let key = hooks.use_memo(||
+        elms[current_idx.get() as usize].0.clone(),
+        current_idx);
+
+    hooks.use_terminal_events({
+        move |event| match event {
+            TerminalEvent::Key(KeyEvent { code, kind, modifiers, .. }) if kind != KeyEventKind::Release && modifiers.contains(KeyModifiers::ALT) => {
+                match code {
+                    KeyCode::Char('V') => layout.set(ManLayout::Vertical),
+                    KeyCode::Char('H') => layout.set(ManLayout::Horizontal),
+                    _ => {},
+                }
+            },
+            _ => {},
+        }});
+
+    if *layout.read() == ManLayout::Vertical {
+        element! {
+            View(flex_direction: FlexDirection::Row, width: 100pct) {
+                View(flex_direction: FlexDirection::Column, width: 50pct) {
+                    Results(elms: elms, current_idx)
+                    Prompt(prompt: prompt, show_carrot: true, nelms, title: "Man Pages".to_owned())
+                }
+                Preview(current: key)
+            }
+        }
+    } else {
+        element! {
+            View(flex_direction: FlexDirection::Column, width: 100pct) {
+                View(flex_direction: FlexDirection::Column, height: 50pct) {
+                    Results(elms: elms, current_idx)
+                    Prompt(prompt: prompt, show_carrot: true, nelms, title: "Man Pages".to_owned())
+                }
+                Preview(current: key)
+            }
         }
     }
         
@@ -201,7 +396,7 @@ fn Picker<'a>(_props: &'a ManPicker, mut hooks: Hooks) -> impl Into<AnyElement<'
 fn main() {
     smol::block_on(
         element! {
-            View(width: Size::Length(80)) {
+            View(width: 160, height: 30) {
                 Picker()
             }
         }
