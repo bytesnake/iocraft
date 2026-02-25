@@ -23,7 +23,7 @@ fn parse_man_output(output: &str) -> Vec<ManPage> {
     for line in output.lines().map(|x| x.trim()).filter(|x| !x.is_empty()) {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 2 {
-            continue; 
+            continue;
         }
 
         // The key is the first part (e.g., "arandr")
@@ -49,7 +49,11 @@ fn matches(key: &str, query: &str) -> Option<Vec<MixedTextContent>> {
 
     while let Some(pos) = key[last..].find(query) {
         elms.push(MixedTextContent::new(&key[last..last + pos]));
-        elms.push(MixedTextContent::new(&key[last + pos..last + pos + query.len()]).color(Color::Red).weight(Weight::Bold));
+        elms.push(
+            MixedTextContent::new(&key[last + pos..last + pos + query.len()])
+                .color(Color::Red)
+                .weight(Weight::Bold),
+        );
 
         last += pos + query.len();
     }
@@ -72,13 +76,15 @@ fn get_man_pages() -> io::Result<Vec<ManPage>> {
     if !output.status.success() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("Command failed: {}", String::from_utf8_lossy(&output.stderr)),
+            format!(
+                "Command failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
         ));
     }
 
-    let output_str = String::from_utf8(output.stdout).map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, e)
-    })?;
+    let output_str = String::from_utf8(output.stdout)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     Ok(parse_man_output(&output_str))
 }
@@ -104,7 +110,7 @@ fn Prompt<'a>(props: &'a PromptProps, _hooks: Hooks) -> impl Into<AnyElement<'st
             }
             View(flex_direction: FlexDirection::Row) {
                 #( if props.show_carrot { Some(
-                        element! { Text(content: ">", color: Some(Color::Red)) }) 
+                        element! { Text(content: ">", color: Some(Color::Red)) })
                    } else { None }
                 )
                 View(flex_grow: 1.0, background_color: Color::DarkGrey) {
@@ -116,7 +122,7 @@ fn Prompt<'a>(props: &'a PromptProps, _hooks: Hooks) -> impl Into<AnyElement<'st
     }
 }
 
-fn find_sgr<I: Iterator<Item=char>>(it: &mut std::iter::Peekable<I>, e: char) -> Option<usize> {
+fn find_sgr<I: Iterator<Item = char>>(it: &mut std::iter::Peekable<I>, e: char) -> Option<usize> {
     let Some(c) = it.peek() else {
         return None;
     };
@@ -148,9 +154,15 @@ fn escape_chars_to_styling(content: &str) -> Vec<MixedTextContent> {
     let (mut text, mut bold, mut underline) = (String::new(), false, false);
     let mut elms = Vec::new();
     let mut push = |text, bold, underline| {
-        elms.push(MixedTextContent::new(text)
-            .weight(if bold { Weight::Bold } else { Weight::Normal })
-            .decoration(if underline { TextDecoration::Underline } else { TextDecoration::None }));
+        elms.push(
+            MixedTextContent::new(text)
+                .weight(if bold { Weight::Bold } else { Weight::Normal })
+                .decoration(if underline {
+                    TextDecoration::Underline
+                } else {
+                    TextDecoration::None
+                }),
+        );
     };
 
     let mut it = content.chars().peekable();
@@ -164,13 +176,19 @@ fn escape_chars_to_styling(content: &str) -> Vec<MixedTextContent> {
                 text = String::new();
 
                 match x {
-                    0 | 22 => {bold = false; underline = false;},
+                    0 | 22 => {
+                        bold = false;
+                        underline = false;
+                    }
                     1 => bold = true,
                     4 => underline = true,
                     24 => underline = false,
-                    x => {dbg!(x); panic!("");},
+                    x => {
+                        dbg!(x);
+                        panic!("");
+                    }
                 }
-            },
+            }
             None => is_text = true,
         };
 
@@ -198,7 +216,9 @@ struct PreviewProps {
 #[component]
 fn Preview<'a>(props: &'a PreviewProps, mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
     let mut contents = hooks.use_state_default();
-    let width = hooks.use_component_rect().get()
+    let width = hooks
+        .use_component_rect()
+        .get()
         .map(|rect| rect.right - rect.left - 2);
 
     let update_page = hooks.use_async_handler(move |current: String| async move {
@@ -207,20 +227,28 @@ fn Preview<'a>(props: &'a PreviewProps, mut hooks: Hooks) -> impl Into<AnyElemen
             return;
         };
 
-        let res = Command::new("man").args(&[&current.to_string()])
+        let res = Command::new("man")
+            .args(&[&current.to_string()])
             .env("MANWIDTH", width.to_string())
             .env("MAN_KEEP_FORMATTING", "1")
             .env("GROFF_SGR", "1")
             .stdout(Stdio::piped())
-            .output().await.unwrap();
+            .output()
+            .await
+            .unwrap();
 
-        contents.set(escape_chars_to_styling(str::from_utf8(&res.stdout).unwrap()));
+        contents.set(escape_chars_to_styling(
+            str::from_utf8(&res.stdout).unwrap(),
+        ));
     });
 
     // update content when page key or width changed
-    hooks.use_memo(|| update_page(props.current.clone()), (&props.current, width));
+    hooks.use_memo(
+        || update_page(props.current.clone()),
+        (&props.current, width),
+    );
 
-    element! { 
+    element! {
         View(flex_grow: 1.0, flex_direction: FlexDirection::Column, border_style: BorderStyle::Round) {
             View(height: 1, margin_top: -1, justify_content: JustifyContent::Center) {
                 Text(content: "Preview")
@@ -244,13 +272,14 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
         panic!("value is required");
     };
 
-    let max_len = hooks.use_memo(|| 
-        props.elms.iter().map(|x| x.0.len()).max().unwrap_or(0) as u32, 
-        &props.elms.iter().map(|x| x.0.clone()).collect::<String>());
+    let max_len = hooks.use_memo(
+        || props.elms.iter().map(|x| x.0.len()).max().unwrap_or(0) as u32,
+        &props.elms.iter().map(|x| x.0.clone()).collect::<String>(),
+    );
 
     let (width, height) = match hooks.use_component_rect().get() {
         Some(rect) => (rect.right - rect.left - 2, rect.bottom - rect.top - 2),
-        _ => (16, 16)
+        _ => (16, 16),
     };
 
     let max_len = u32::min(max_len, height as u32);
@@ -268,7 +297,7 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
     let nprops = props.elms.len();
     let current_key = match props.elms.len() {
         0 => None,
-        _ => Some(props.elms[current_idx.get() as usize].0.clone())
+        _ => Some(props.elms[current_idx.get() as usize].0.clone()),
     };
 
     hooks.use_terminal_events({
@@ -281,22 +310,24 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
                         } else {
                             current_idx.set(current_idx.get() - 1);
                         }
-                    },
+                    }
                     KeyCode::Down => {
                         if current_idx.get() < nprops as isize - 1 {
                             current_idx.set(current_idx.get() + 1);
                         } else {
                             current_idx.set(0);
                         }
-                    },
+                    }
                     KeyCode::Enter => {
                         current_key.as_ref().map(|current_key| {
-                            let _ = std::process::Command::new("man").arg(&current_key)
+                            let _ = std::process::Command::new("man")
+                                .arg(&current_key)
                                 .stdout(Stdio::inherit())
                                 .stdin(Stdio::inherit())
-                                .output().unwrap();
+                                .output()
+                                .unwrap();
                         });
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -304,7 +335,7 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
         }
     });
 
-    element! { 
+    element! {
         View(flex_grow: 1.0, flex_direction: FlexDirection::Column, border_style: BorderStyle::Round) {
             View(height: 1, margin_top: -1, justify_content: JustifyContent::Center) {
                 Text(content: "Results")
@@ -316,7 +347,7 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
                 } else {
                     (Color::Reset, mat)
                 })
-                .map(|(color, mat)| element! { 
+                .map(|(color, mat)| element! {
                     View(flex_direction: FlexDirection::Row, background_color: Some(color)) {
                         View(width: key_len, height: 1) { Text(content: mat.0.clone(), color: Some(Color::Cyan), weight: Weight::Bold) }
                         View(width: header_len) {MixedText(contents: mat.1.clone(), wrap: TextWrap::NoWrap) }
@@ -344,30 +375,39 @@ fn Picker<'a>(_props: &'a ManPicker, mut hooks: Hooks) -> impl Into<AnyElement<'
     let mut layout = hooks.use_state(|| ManLayout::Vertical);
 
     // cache preview elements based on current prompt
-    let elms = hooks.use_memo(|| 
-        pages.iter()
-            .filter_map(|page| matches(&page.title, &prompt.read().as_str())
-                .map(|x| (page.key.clone(), x))
-            ).collect::<Vec<_>>()
-        , &prompt);
+    let elms = hooks.use_memo(
+        || {
+            pages
+                .iter()
+                .filter_map(|page| {
+                    matches(&page.title, &prompt.read().as_str()).map(|x| (page.key.clone(), x))
+                })
+                .collect::<Vec<_>>()
+        },
+        &prompt,
+    );
 
     let nelms = (elms.len(), pages.len());
 
-    let key = hooks.use_memo(||
-        elms[current_idx.get() as usize].0.clone(),
-        current_idx);
+    let key = hooks.use_memo(|| elms[current_idx.get() as usize].0.clone(), current_idx);
 
     hooks.use_terminal_events({
         move |event| match event {
-            TerminalEvent::Key(KeyEvent { code, kind, modifiers, .. }) if kind != KeyEventKind::Release && modifiers.contains(KeyModifiers::ALT) => {
+            TerminalEvent::Key(KeyEvent {
+                code,
+                kind,
+                modifiers,
+                ..
+            }) if kind != KeyEventKind::Release && modifiers.contains(KeyModifiers::ALT) => {
                 match code {
                     KeyCode::Char('V') => layout.set(ManLayout::Vertical),
                     KeyCode::Char('H') => layout.set(ManLayout::Horizontal),
-                    _ => {},
+                    _ => {}
                 }
-            },
-            _ => {},
-        }});
+            }
+            _ => {}
+        }
+    });
 
     if *layout.read() == ManLayout::Vertical {
         element! {
@@ -390,7 +430,6 @@ fn Picker<'a>(_props: &'a ManPicker, mut hooks: Hooks) -> impl Into<AnyElement<'
             }
         }
     }
-        
 }
 
 fn main() {
@@ -409,7 +448,7 @@ fn main() {
                 Picker()
             }
         }
-        .render_loop()
+        .render_loop(),
     )
     .unwrap();
 }
