@@ -1,8 +1,8 @@
-use iocraft::prelude::*;
-
-//use std::process::{Command, Stdio};
-use smol::process::{Command, Stdio};
 use std::io;
+
+use iocraft::prelude::*;
+use smol::process::{Command, Stdio};
+use which::which;
 
 #[derive(Clone, Debug)]
 struct ManPage {
@@ -394,6 +394,15 @@ fn Picker<'a>(_props: &'a ManPicker, mut hooks: Hooks) -> impl Into<AnyElement<'
 }
 
 fn main() {
+    if which("man").is_err() {
+        println!("System interface manual `man` not available!");
+        return;
+    }
+    if which("ul").is_err() {
+        println!("Formatter `ul` not available!");
+        return;
+    }
+
     smol::block_on(
         element! {
             View(width: 160, height: 30) {
