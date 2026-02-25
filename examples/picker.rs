@@ -91,7 +91,6 @@ fn get_man_pages() -> io::Result<Vec<ManPage>> {
 
 #[derive(Props, Default)]
 struct PromptProps {
-    title: String,
     show_carrot: bool,
     prompt: Option<State<String>>,
     nelms: (usize, usize),
@@ -165,7 +164,7 @@ fn escape_chars_to_styling(content: &str) -> Vec<MixedTextContent> {
         );
     };
 
-    let mut it = content.chars().peekable();
+    let mut it = content.chars().take(4096).peekable();
     loop {
         let mut is_text = false;
         let sgr = find_sgr(&mut it, 'm');
@@ -183,9 +182,9 @@ fn escape_chars_to_styling(content: &str) -> Vec<MixedTextContent> {
                     1 => bold = true,
                     4 => underline = true,
                     24 => underline = false,
-                    x => {
-                        dbg!(x);
-                        panic!("");
+                    _ => {
+                        //dbg!(x);
+                        //panic!("");
                     }
                 }
             }
@@ -272,19 +271,10 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
         panic!("value is required");
     };
 
-    let max_len = hooks.use_memo(
-        || props.elms.iter().map(|x| x.0.len()).max().unwrap_or(0) as u32,
-        &props.elms.iter().map(|x| x.0.clone()).collect::<String>(),
-    );
-
     let (width, height) = match hooks.use_component_rect().get() {
         Some(rect) => (rect.right - rect.left - 2, rect.bottom - rect.top - 2),
-        _ => (16, 16),
+        _ => (30, 20),
     };
-
-    let max_len = u32::min(max_len, height as u32);
-    let header_len = u32::max(width as u32 - max_len - 4, 4);
-    let key_len = width as u32 - header_len;
 
     let mut beginning = hooks.use_state(|| 0);
 
@@ -294,30 +284,35 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
         beginning.set(current_idx.get() - height as isize + 1);
     }
 
+    let max_len = hooks.use_memo(
+        || props.elms.iter().skip(beginning.get() as usize).take(height as usize).map(|x| x.0.chars().count()).max().unwrap_or(0) as u32,
+        (&props.elms.iter().map(|x| x.0.clone()).collect::<String>(), &beginning)
+    );
+
+    let max_len = u32::min(max_len, width as u32);
+    let header_len = u32::max(width as u32 - max_len - 1, 4);
+    let key_len = width as u32 - header_len;
+
     let nprops = props.elms.len();
     let current_key = match props.elms.len() {
         0 => None,
-        _ => Some(props.elms[current_idx.get() as usize].0.clone()),
+        _ => {
+            if current_idx.get() as usize >= props.elms.len() {
+                current_idx.set(props.elms.len() as isize - 1);
+            }
+
+            Some(props.elms[current_idx.get() as usize].0.clone())
+        }
     };
 
     hooks.use_terminal_events({
         move |event| match event {
-            TerminalEvent::Key(KeyEvent { code, kind, .. }) if kind != KeyEventKind::Release => {
+            TerminalEvent::Key(KeyEvent { code, kind, modifiers, .. }) if kind != KeyEventKind::Release => {
                 match code {
-                    KeyCode::Up => {
-                        if current_idx.get() - 1 < 0 {
-                            current_idx.set(nprops as isize - 1);
-                        } else {
-                            current_idx.set(current_idx.get() - 1);
-                        }
-                    }
-                    KeyCode::Down => {
-                        if current_idx.get() < nprops as isize - 1 {
-                            current_idx.set(current_idx.get() + 1);
-                        } else {
-                            current_idx.set(0);
-                        }
-                    }
+                    KeyCode::Up => current_idx.set((current_idx.get() - 1) % nprops as isize),
+                    KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => current_idx.set((current_idx.get() - 10) % nprops as isize),
+                    KeyCode::Down => current_idx.set((current_idx.get() + 1) % nprops as isize),
+                    KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => current_idx.set((current_idx.get() + 10) % nprops as isize),
                     KeyCode::Enter => {
                         current_key.as_ref().map(|current_key| {
                             let _ = std::process::Command::new("man")
@@ -389,7 +384,13 @@ fn Picker<'a>(_props: &'a ManPicker, mut hooks: Hooks) -> impl Into<AnyElement<'
 
     let nelms = (elms.len(), pages.len());
 
-    let key = hooks.use_memo(|| elms[current_idx.get() as usize].0.clone(), current_idx);
+    let key = hooks.use_memo(|| {
+        if current_idx.get() as usize >= elms.len() {
+            elms.last().map(|x| x.0.clone()).unwrap_or(String::new())
+        } else {
+            elms[current_idx.get() as usize].0.clone()
+        }
+    }, (&current_idx, &prompt));
 
     hooks.use_terminal_events({
         move |event| match event {
@@ -414,7 +415,7 @@ fn Picker<'a>(_props: &'a ManPicker, mut hooks: Hooks) -> impl Into<AnyElement<'
             View(flex_direction: FlexDirection::Row, width: 100pct) {
                 View(flex_direction: FlexDirection::Column, width: 50pct) {
                     Results(elms: elms, current_idx)
-                    Prompt(prompt: prompt, show_carrot: true, nelms, title: "Man Pages".to_owned())
+                    Prompt(prompt: prompt, show_carrot: true, nelms)
                 }
                 Preview(current: key)
             }
@@ -424,9 +425,11 @@ fn Picker<'a>(_props: &'a ManPicker, mut hooks: Hooks) -> impl Into<AnyElement<'
             View(flex_direction: FlexDirection::Column, width: 100pct) {
                 View(flex_direction: FlexDirection::Column, height: 50pct) {
                     Results(elms: elms, current_idx)
-                    Prompt(prompt: prompt, show_carrot: true, nelms, title: "Man Pages".to_owned())
+                    Prompt(prompt: prompt, show_carrot: true, nelms)
                 }
-                Preview(current: key)
+                View(height: 50pct) {
+                    Preview(current: key)
+                }
             }
         }
     }
