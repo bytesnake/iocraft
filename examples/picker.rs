@@ -140,7 +140,7 @@ fn find_sgr<I: Iterator<Item = char>>(it: &mut std::iter::Peekable<I>, e: char) 
         return None;
     };
 
-    if *it.peek().unwrap() == e {
+    if it.peek().map(|x| *x == e).unwrap_or(true) {
         return Some(0);
     }
 
@@ -262,7 +262,7 @@ fn Preview<'a>(props: &'a PreviewProps, mut hooks: Hooks) -> impl Into<AnyElemen
 #[derive(Props, Default)]
 struct ResultsProps {
     elms: Vec<(String, Vec<MixedTextContent>)>,
-    current_idx: Option<State<isize>>,
+    current_idx: Option<State<usize>>,
 }
 
 #[component]
@@ -280,8 +280,8 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
 
     if beginning > current_idx.get() {
         beginning.set(current_idx.get());
-    } else if current_idx.get() > beginning + height as isize - 1 {
-        beginning.set(current_idx.get() - height as isize + 1);
+    } else if current_idx.get() > beginning + height as usize - 1 {
+        beginning.set(current_idx.get() - height as usize + 1);
     }
 
     let max_len = hooks.use_memo(
@@ -297,22 +297,25 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
     let current_key = match props.elms.len() {
         0 => None,
         _ => {
-            if current_idx.get() as usize >= props.elms.len() {
-                current_idx.set(props.elms.len() as isize - 1);
+            if current_idx.get() >= props.elms.len() {
+                current_idx.set(props.elms.len() - 1);
             }
 
-            Some(props.elms[current_idx.get() as usize].0.clone())
+            Some(props.elms[current_idx.get()].0.clone())
         }
     };
+
+    let (stdout, stderr) = hooks.use_output();
 
     hooks.use_terminal_events({
         move |event| match event {
             TerminalEvent::Key(KeyEvent { code, kind, modifiers, .. }) if kind != KeyEventKind::Release => {
                 match code {
-                    KeyCode::Up => current_idx.set((current_idx.get() - 1) % nprops as isize),
-                    KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => current_idx.set((current_idx.get() - 10) % nprops as isize),
-                    KeyCode::Down => current_idx.set((current_idx.get() + 1) % nprops as isize),
-                    KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => current_idx.set((current_idx.get() + 10) % nprops as isize),
+                    KeyCode::Up =>
+                        current_idx.set((current_idx.get() as isize - 1).rem_euclid(nprops as isize) as usize),
+                    KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => current_idx.set((current_idx.get() as isize - 10).rem_euclid(nprops as isize) as usize),
+                    KeyCode::Down => current_idx.set((current_idx.get() + 1) % nprops ),
+                    KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => current_idx.set((current_idx.get() + 10) % nprops),
                     KeyCode::Enter => {
                         current_key.as_ref().map(|current_key| {
                             let _ = std::process::Command::new("man")
@@ -337,7 +340,7 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
             }
             View(flex_direction: FlexDirection::Column, overflow: Some(Overflow::Hidden)) {
                 #(props.elms.iter().enumerate().skip(beginning.get() as usize)
-                .map(|(idx, mat)| if current_idx.get() as usize == idx {
+                .map(|(idx, mat)| if current_idx.get() == idx {
                     (Color::DarkGrey, mat)
                 } else {
                     (Color::Reset, mat)
@@ -364,7 +367,7 @@ fn Picker<'a>(_props: &'a ManPicker, mut hooks: Hooks) -> impl Into<AnyElement<'
     // query of the prompt element and selected element in the results lists
     // are shared between two components
     let prompt: State<String> = hooks.use_state_default();
-    let current_idx = hooks.use_state(|| 0isize);
+    let current_idx = hooks.use_state(|| 0usize);
 
     // layout can be changed during runtime
     let mut layout = hooks.use_state(|| ManLayout::Vertical);
@@ -385,10 +388,10 @@ fn Picker<'a>(_props: &'a ManPicker, mut hooks: Hooks) -> impl Into<AnyElement<'
     let nelms = (elms.len(), pages.len());
 
     let key = hooks.use_memo(|| {
-        if current_idx.get() as usize >= elms.len() {
+        if current_idx.get() >= elms.len() {
             elms.last().map(|x| x.0.clone()).unwrap_or(String::new())
         } else {
-            elms[current_idx.get() as usize].0.clone()
+            elms[current_idx.get()].0.clone()
         }
     }, (&current_idx, &prompt));
 
