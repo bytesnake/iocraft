@@ -27,11 +27,16 @@ fn parse_man_output(output: &str) -> Vec<ManPage> {
         }
 
         // The key is the first part (e.g., "arandr")
-        let key = parts[0].trim_end_matches('(').to_string();
+        //let key = parts[0].trim_end_matches('(').to_string();
+        let key = parts[0].split('(').next().unwrap().to_string();
 
         // The title is the rest of the line after the key and section (e.g., "visual front end for XRandR 1.2")
         let title_start = line.find("  - ").map_or(line.len(), |pos| pos + 3);
         let title = line[title_start..].trim().to_string();
+
+        if title.is_empty() {
+            continue;
+        }
 
         man_pages.push(ManPage { title, key });
     }
@@ -305,8 +310,7 @@ fn Results<'a>(props: &'a ResultsProps, mut hooks: Hooks) -> impl Into<AnyElemen
         }
     };
 
-    let (stdout, stderr) = hooks.use_output();
-
+    //let (stdout, stderr) = hooks.use_output();
     hooks.use_terminal_events({
         move |event| match event {
             TerminalEvent::Key(KeyEvent { code, kind, modifiers, .. }) if kind != KeyEventKind::Release => {
